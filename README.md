@@ -23,7 +23,7 @@
 Le point le plus chaud du crayon reste sur l'axe (`r = 0`), comme en v1 : la chaleur générée par fission traverse la pastille par conduction radiale. Ce qui change en v2, c'est ce qui se passe *à* la surface (`r = R`) : au lieu d'y imposer une température, on y impose la **continuité du flux** entre conduction (côté solide) et convection (côté fluide caloporteur).
 
 <p align="center">
-  <img src="docs/img/schema_probleme_v2.png" width="900" alt="Schéma du problème v2 : coupe radiale avec convection en surface, et profil de température attendu (parabole décalée)">
+  <img src="figures/schema_probleme_v2.png" width="900" alt="Schéma du problème v2 : coupe radiale avec convection en surface, et profil de température attendu (parabole décalée)">
 </p>
 
 *Gauche : coupe radiale, la surface n'est plus à température fixée mais échange par convection avec le fluide (`h`, `T_fluide`). Droite : le profil reste une parabole (conduction interne inchangée), mais toute la courbe est translatée du saut convectif `q'''R/(2h)`.*
@@ -91,7 +91,7 @@ Cas de validation, mêmes valeurs REP que la v1 (`R = 4,1 mm`, `k = 3 W/(m·K)`,
 $$T(r) = \underbrace{T_{fluide} + \frac{\dot q'''R}{2h}}_{\text{saut convectif}} + \underbrace{\frac{\dot q'''}{4k}\left(R^2 - r^2\right)}_{\text{parabole (identique à v1)}}$$
 
 <p align="center">
-  <img src="docs/img/validation_v2.png" width="620" alt="Comparaison solution numérique vs parabole décalée analytique">
+  <img src="figures/validation_v2.png" width="620" alt="Comparaison solution numérique vs parabole décalée analytique">
 </p>
 
 | Grandeur | Valeur numérique | Valeur analytique |
