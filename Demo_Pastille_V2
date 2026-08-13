@@ -1,0 +1,57 @@
+"""
+Validation de PastilleV2 : source uniforme, convection en surface.
+En regime permanent la solution exacte est une parabole decalee :
+    T(r) = T_fluide + q*R/(2h) + (dot_q/4k) * (R^2 - r^2)
+(meme parabole qu'en v1, decalee par le saut convectif en surface)
+"""
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+from pastille_v2 import PastilleV2
+
+alpha = 6.9e-7
+k_th = 3.0
+R = 4.1e-3
+N = 101
+T_fluide = 310.0            # eau primaire REP, ordre de grandeur
+dot_q = 3.8e8
+h_conv = 3.5e4               # W/(m2.K), ordre de grandeur REP
+
+dt = 0.05
+n_steps = 6000
+
+pastille = PastilleV2(
+    alpha=alpha, k_th=k_th, R=R, N=N, dt=dt,
+    h_conv=h_conv, T_fluide=T_fluide,
+    T_init=np.full(N, T_fluide), source=dot_q,
+)
+pastille.solve(n_steps)
+
+T_surface_exact = T_fluide + dot_q * R / (2 * h_conv)
+T_exact = T_surface_exact + (dot_q / (4 * k_th)) * (R**2 - pastille.r**2)
+err = np.max(np.abs(pastille.T - T_exact))
+
+P_generee = dot_q * np.pi * R**2
+P_sortante = pastille.flux_sortant_frontiere()
+
+print(f"T surface numerique : {pastille.T[-1]:.4f} degC")
+print(f"T surface exacte     : {T_surface_exact:.4f} degC")
+print(f"T centre numerique   : {pastille.T[0]:.4f} degC")
+print(f"erreur max           : {err:.3e} degC")
+print(f"puissance generee    : {P_generee:.4f} W/m")
+print(f"puissance sortante   : {P_sortante:.4f} W/m")
+print(f"ecart relatif bilan  : {abs(P_generee - P_sortante) / P_generee:.3e}")
+
+plt.figure(figsize=(8, 5))
+plt.plot(pastille.r * 1e3, pastille.T, 'o', ms=4, color="crimson", label="numerique (VF, Robin)")
+plt.plot(pastille.r * 1e3, T_exact, 'k-', lw=1.5, label="parabole decalee exacte")
+plt.axhline(T_fluide, ls='--', color='steelblue', lw=1, label="T fluide")
+plt.xlabel("rayon [mm]")
+plt.ylabel("T [degC]")
+plt.title("Pastille cylindrique - convection en surface (Robin)")
+plt.legend()
+plt.grid(alpha=0.3)
+plt.tight_layout()
+plt.savefig("pastille_v2_validation.png", dpi=130)
+plt.show()
