@@ -1,0 +1,160 @@
+"""
+Suite de tests pour la classe PastilleV2 (Robin en surface).
+Lancer avec : pytest test_pastille_v2.py -v
+
+Meme logique que v1 : les tests herites (centre, stabilite, source)
+sont repris, et les tests specifiques a Robin recoivent leurs propres
+verifications, dont un test de coherence limite avec v1 (h -> infini
+doit redonner Dirichlet).
+"""
+
+import numpy as np
+import pytest
+from pastille_v2 import PastilleV2
+from pastille_v1 import PastilleV1
+
+
+def make_pastille(N=51, dt=0.05, alpha=6.9e-7, k_th=3.0, R=4.1e-3,
+                   h_conv=3.5e4, T_fluide=310.0, T_init=None, source=None):
+    return PastilleV2(
+        alpha=alpha, k_th=k_th, R=R, N=N, dt=dt,
+        h_conv=h_conv, T_fluide=T_fluide, T_init=T_init, source=source,
+    )
+
+
+# --- Tests herites du solveur de base (identiques a v1 dans l'esprit) ---
+
+def test_stabilite_bornee():
+    pas = make_pastille(dt=1.0, source=3.8e8)
+    pas.solve(500)
+    assert np.all(np.isfinite(pas.T))
+    assert pas.T.max() < 5000.0
+    assert pas.T.min() > -100.0
+
+
+def test_isotherme_sans_source():
+    """Sans source, et fluide/pastille a la meme temperature, rien ne
+    doit bouger (equilibre trivial, flux convectif nul par symetrie)."""
+    N = 41
+    pas = make_pastille(N=N, source=None,
+                         T_init=np.full(N, 310.0), T_fluide=310.0)
+    pas.solve(500)
+    assert np.allclose(pas.T, 310.0, atol=1e-8)
+
+
+def test_centre_maximum_temperature():
+    pas = make_pastille(source=3.8e8)
+    pas.solve(3000)
+    assert pas.T[0] == pas.T.max()
+    assert np.all(np.diff(pas.T) <= 1e-9)
+
+
+def test_pas_de_singularite_au_centre():
+    for N in [11, 51, 201]:
+        pas = make_pastille(N=N, source=3.8e8)
+        pas.solve(100)
+        assert np.isfinite(pas.T[0])
+
+
+# --- Tests specifiques a la condition de Robin ---
+
+def test_surface_plus_chaude_que_fluide():
+    """Avec une source positive, la surface doit necessairement etre
+    plus chaude que le fluide (le flux ne peut aller que du chaud vers
+    le froid) : verifie qu'aucune erreur de signe ne s'est glissee dans
+    le terme convectif."""
+    pas = make_pastille(source=3.8e8, T_fluide=310.0)
+    pas.solve(3000)
+    assert pas.T[-1] > pas.T_fluide
+
+
+def test_parabole_decalee_regime_permanent():
+    """Avec une source uniforme, le regime permanent doit etre :
+        T(r) = T_fluide + q*R/(2h) + (q/4k)(R^2 - r^2)
+    Valide specifiquement le terme de Robin (le saut convectif
+    T_surface - T_fluide = q*R/(2h)) en plus du stencil deja valide
+    par v1."""
+    N = 101
+    R = 4.1e-3
+    k_th = 3.0
+    T_fluide = 310.0
+    dot_q = 3.8e8
+    h_conv = 3.5e4
+
+    pas = make_pastille(N=N, R=R, k_th=k_th, h_conv=h_conv,
+                         T_fluide=T_fluide, T_init=np.full(N, T_fluide),
+                         source=dot_q, dt=0.05)
+    pas.solve(6000)
+
+    T_surface_exact = T_fluide + dot_q * R / (2 * h_conv)
+    T_exact = T_surface_exact + (dot_q / (4 * k_th)) * (R**2 - pas.r**2)
+
+    assert np.max(np.abs(pas.T - T_exact)) < 0.5
+    assert pas.T[-1] == pytest.approx(T_surface_exact, abs=0.1)
+
+
+def test_bilan_energie_regime_permanent():
+    """Contrairement a v1 (bilan tronque a r < R - dr/2 a cause du
+    Dirichlet exact au dernier noeud), ici le bilan porte sur le disque
+    complet : toute la puissance generee dans la pastille doit ressortir
+    par convection en surface."""
+    N = 101
+    R = 4.1e-3
+    dot_q = 3.8e8
+
+    pas = make_pastille(N=N, R=R, source=dot_q,
+                         T_init=np.full(N, 310.0), dt=0.05)
+    pas.solve(6000)
+
+    P_generee = dot_q * np.pi * R**2
+    P_sortante = pas.flux_sortant_frontiere()
+
+    assert P_sortante == pytest.approx(P_generee, rel=1e-3)
+
+
+def test_limite_h_infini_redonne_dirichlet():
+    """Test de coherence entre versions : quand h_conv -> infini, la
+    condition de Robin doit converger vers une temperature de surface
+    imposee exactement egale a T_fluide -- c'est-a-dire redonner
+    exactement le cas PastilleV1 avec T_surface = T_fluide.
+
+    Ce test ne verifie pas juste que v2 est "raisonnable" : il verifie
+    qu'elle degenere vers v1 dans le cas limite ou les deux doivent
+    mathematiquement coincider."""
+    N = 81
+    R = 4.1e-3
+    k_th = 3.0
+    dot_q = 3.8e8
+    T_ref = 320.0
+
+    pas_v1 = PastilleV1(alpha=6.9e-7, k_th=k_th, R=R, N=N, dt=0.05,
+                         T_surface=T_ref, T_init=np.full(N, T_ref),
+                         source=dot_q)
+    pas_v1.solve(6000)
+
+    pas_v2 = PastilleV2(alpha=6.9e-7, k_th=k_th, R=R, N=N, dt=0.05,
+                         h_conv=1e9, T_fluide=T_ref,
+                         T_init=np.full(N, T_ref), source=dot_q)
+    pas_v2.solve(6000)
+
+    assert np.max(np.abs(pas_v1.T - pas_v2.T)) < 0.05
+
+
+def test_source_nulle_equivaut_none():
+    N = 51
+    T_init = np.full(N, 310.0)
+
+    pas_none = make_pastille(N=N, T_init=T_init.copy(), source=None)
+    pas_zero = make_pastille(N=N, T_init=T_init.copy(), source=0.0)
+    pas_none.solve(300)
+    pas_zero.solve(300)
+
+    assert np.allclose(pas_none.T, pas_zero.T, atol=1e-12)
+
+
+@pytest.mark.parametrize("N", [21, 51, 101, 201])
+def test_stabilite_plusieurs_maillages(N):
+    pas = make_pastille(N=N, source=3.8e8)
+    pas.solve(1000)
+    assert np.all(np.isfinite(pas.T))
+    assert pas.T[0] >= pas.T[-1] >= pas.T_fluide
