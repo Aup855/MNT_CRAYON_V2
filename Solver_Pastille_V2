@@ -1,0 +1,156 @@
+"""
+Solveur 1D de conduction thermique dans une pastille combustible
+(cylindre plein, monomateriau), volumes finis + Crank-Nicolson,
+avec convection en surface (condition de Robin).
+
+Reprend le solveur de PastilleV1 a l'identique (geometrie, noeud
+central, noeuds interieurs) : seule la derniere ligne de la matrice
+et du second membre change, pour remplacer la temperature imposee en
+surface par un flux convectif h*(T_fluide - T_surface).
+"""
+
+import numpy as np
+from scipy.linalg import solve_banded
+
+
+class PastilleV2:
+    """Solveur 1D cylindrique (volumes finis, vertex-centered) :
+    symetrie automatique au centre, convection en surface (Robin),
+    source volumique interne uniforme ou variable."""
+
+    def __init__(self, alpha, k_th, R, N, dt,
+                 h_conv, T_fluide, T_init=None, source=None):
+        """
+        alpha      : diffusivite thermique [m^2/s]
+        k_th       : conductivite thermique [W/(m.K)]
+        R, N, dt   : rayon [m], nombre de noeuds, pas de temps [s]
+        h_conv     : coefficient de convection eau/gaine [W/(m2.K)]
+        T_fluide   : temperature du fluide caloporteur [degC]
+        T_init     : etat initial (defaut : pastille a T_fluide)
+        source     : puissance volumique dot_q [W/m3]. None / scalaire
+                     / tableau (N,)
+        """
+        self.alpha = alpha
+        self.k_th = k_th
+        self.rho_cp = k_th / alpha
+
+        self.R = R
+        self.N = N
+        self.dt = dt
+        self.dr = R / (N - 1)
+        self.r = np.linspace(0.0, R, N)
+
+        # Geometrie identique a v1 : elle ne depend que du maillage,
+        # pas du type de condition limite.
+        dr = self.dr
+        i = np.arange(N)
+        r_face = (i[:-1] + 0.5) * dr
+        self.Aface = 2.0 * np.pi * r_face
+
+        self.V = np.empty(N)
+        self.V[0] = np.pi * (0.5 * dr) ** 2
+        self.V[1:-1] = 2.0 * np.pi * self.r[1:-1] * dr
+        r_face_last = self.r[-1] - 0.5 * dr
+        self.V[-1] = np.pi * (self.r[-1] ** 2 - r_face_last ** 2)
+
+        # Condition de Robin : A_R est l'aire REELLE de la surface externe
+        # du crayon (par unite de longueur axiale), utilisee pour le flux
+        # convectif -- differente de Aface[-1] (aire de la derniere face
+        # interne, entre les deux derniers noeuds).
+        self.h_conv = h_conv
+        self.T_fluide = T_fluide
+        self.A_R = 2.0 * np.pi * R
+
+        if source is None:
+            self.source = np.zeros(N)
+        elif np.isscalar(source):
+            self.source = np.full(N, float(source))
+        else:
+            self.source = np.array(source, dtype=float)
+            if self.source.shape != (N,):
+                raise ValueError("source doit etre un scalaire ou un tableau (N,)")
+
+        self.T = np.full(N, T_fluide) if T_init is None else np.array(T_init, float)
+
+        self.t = 0.0
+        self.historique = [self.T.copy()]
+        self.temps = [0.0]
+
+        self.aE = k_th * self.Aface / dr
+
+        self.ab = self._construire_matrice()
+
+    def _construire_matrice(self):
+        """Matrice tridiagonale (3, N). Identique a v1 pour les lignes
+        0 a N-2 (noeud central + noeuds interieurs) ; seule la derniere
+        ligne change : Robin au lieu de Dirichlet."""
+        N, dt, rho_cp = self.N, self.dt, self.rho_cp
+        V, aE_arr = self.V, self.aE
+
+        ab = np.zeros((3, N))
+
+        for idx in range(1, N - 1):
+            aE = aE_arr[idx]
+            aW = aE_arr[idx - 1]
+            diag = rho_cp * V[idx] / dt + 0.5 * (aE + aW)
+            ab[1, idx] = diag
+            ab[0, idx + 1] = -0.5 * aE
+            ab[2, idx - 1] = -0.5 * aW
+
+        aE0 = aE_arr[0]
+        ab[1, 0] = rho_cp * V[0] / dt + 0.5 * aE0
+        ab[0, 1] = -0.5 * aE0
+
+        # Noeud frontiere : la conductance convective h*A_R joue le meme
+        # role qu'une conductance interne (elle s'ajoute au terme
+        # diagonal) et introduit un forcage constant h*A_R*T_fluide,
+        # traite dans step().
+        aW_last = aE_arr[-1]
+        hA = self.h_conv * self.A_R
+        ab[1, -1] = rho_cp * V[-1] / dt + 0.5 * (aW_last + hA)
+        ab[2, -2] = -0.5 * aW_last
+
+        return ab
+
+    def step(self):
+        """Avance d'un pas de temps."""
+        N, dt, rho_cp = self.N, self.dt, self.rho_cp
+        V, aE_arr, T = self.V, self.aE, self.T
+        b = np.empty(N)
+
+        for idx in range(1, N - 1):
+            aE = aE_arr[idx]
+            aW = aE_arr[idx - 1]
+            flux_expl = aE * (T[idx + 1] - T[idx]) - aW * (T[idx] - T[idx - 1])
+            b[idx] = (rho_cp * V[idx] / dt) * T[idx] + 0.5 * flux_expl + self.source[idx] * V[idx]
+
+        aE0 = aE_arr[0]
+        flux_expl0 = aE0 * (T[1] - T[0])
+        b[0] = (rho_cp * V[0] / dt) * T[0] + 0.5 * flux_expl0 + self.source[0] * V[0]
+
+        # flux_expl_last regroupe les deux flux physiques du bord :
+        # conduction depuis l'interieur, et convection vers le fluide.
+        aW_last = aE_arr[-1]
+        hA = self.h_conv * self.A_R
+        flux_expl_last = aW_last * (T[-2] - T[-1]) - hA * T[-1]
+        b[-1] = (rho_cp * V[-1] / dt) * T[-1] + 0.5 * flux_expl_last \
+                 + hA * self.T_fluide + self.source[-1] * V[-1]
+
+        self.T = solve_banded((1, 1), self.ab, b)
+        self.t += dt
+        self.historique.append(self.T.copy())
+        self.temps.append(self.t)
+        return self.T
+
+    def solve(self, n_steps):
+        for _ in range(n_steps):
+            self.step()
+        return self.T
+
+    def get_historique(self):
+        return np.array(self.historique), np.array(self.temps)
+
+    def flux_sortant_frontiere(self):
+        """Flux convectif [W/m axial] quittant le domaine vers le
+        fluide. Sert a verifier la conservation."""
+        return self.h_conv * self.A_R * (self.T[-1] - self.T_fluide)
